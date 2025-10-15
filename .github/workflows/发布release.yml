@@ -1,0 +1,194 @@
+name: 发布release
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Release tag (e.g., v1.0.0)'
+        required: true
+        default: 'v1.0.0'
+      create_release:
+        description: 'Create GitHub Release'
+        required: true
+        type: boolean
+        default: true
+      overwrite_release:
+        description: 'Overwrite existing release if it exists'
+        required: true
+        type: boolean
+        default: false
+      generate_changelog:
+        description: 'Generate changelog'
+        required: true
+        type: boolean
+        default: true
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  create-release:
+    runs-on: ubuntu-latest
+    if: (github.event_name == 'push' && contains(github.ref, 'refs/tags/')) || (github.event_name == 'workflow_dispatch' && inputs.create_release)
+    name: Create Release
+    outputs:
+      release_tag: ${{ steps.set-tag.outputs.tag }}
+      release_exists: ${{ steps.check-release.outputs.exists }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set release tag
+        id: set-tag
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            echo "tag=${{ inputs.release_tag }}" >> $GITHUB_OUTPUT
+          else
+            echo "tag=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+          fi
+          echo "Release tag: ${{ steps.set-tag.outputs.tag }}"
+
+      - name: Check if release exists
+        id: check-release
+        run: |
+          RESPONSE=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+            "https://api.github.com/repos/${{ github.repository }}/releases/tags/${{ steps.set-tag.outputs.tag }}" || echo "{}")
+          if echo "$RESPONSE" | grep -q '"message":"Not Found"'; then
+            echo "exists=false" >> $GITHUB_OUTPUT
+          else
+            echo "exists=true" >> $GITHUB_OUTPUT
+            echo "Release ${{ steps.set-tag.outputs.tag }} already exists"
+          fi
+
+      - name: Delete existing release
+        if: steps.check-release.outputs.exists == 'true' && (github.event_name == 'workflow_dispatch' && inputs.overwrite_release)
+        run: |
+          echo "Deleting existing release ${{ steps.set-tag.outputs.tag }}..."
+          curl -X DELETE -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+            "https://api.github.com/repos/${{ github.repository }}/releases/tags/${{ steps.set-tag.outputs.tag }}" || echo "Failed to delete release, continuing..."
+          curl -X DELETE -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+            "https://api.github.com/repos/${{ github.repository }}/git/refs/tags/${{ steps.set-tag.outputs.tag }}" || echo "Failed to delete tag, continuing..."
+          sleep 3
+
+      - name: Create Release
+        if: steps.check-release.outputs.exists == 'false' || (github.event_name == 'workflow_dispatch' && inputs.overwrite_release)
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ steps.set-tag.outputs.tag }}
+          name: Release ${{ steps.set-tag.outputs.tag }}
+          body: |
+            静态导出版本 ${{ steps.set-tag.outputs.tag }}
+            
+            ### 包含内容
+            - 构建好的静态文件
+            - 可直接部署的 dist 目录压缩包
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+
+      - name: Skip Release Creation
+        if: steps.check-release.outputs.exists == 'true' && (github.event_name != 'workflow_dispatch' || !inputs.overwrite_release)
+        run: |
+          echo "Release ${{ steps.set-tag.outputs.tag }} already exists and overwrite is disabled. Skipping release creation."
+
+  build-static:
+    needs: create-release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v1
+        with:
+          bun-version: "latest"
+
+      - name: Install dependencies
+        run: bun install
+
+      - name: Build static export
+        run: |
+          bun run build
+
+      - name: Verify build output
+        run: |
+          echo "Build output contents:"
+          ls -la dist/
+          echo "Total files in dist: $(find dist -type f | wc -l)"
+
+      - name: Compress dist folder
+        run: zip -r dist.zip dist
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: static-export
+          path: dist.zip
+
+  release:
+    needs: [create-release, build-static]
+    runs-on: ubuntu-latest
+    if: needs.create-release.outputs.release_exists == 'false' || (github.event_name == 'workflow_dispatch' && inputs.overwrite_release)
+    name: Release Static Export
+    steps:
+      - name: Download build artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: static-export
+          path: ./
+
+      - name: Verify artifact
+        run: |
+          echo "Downloaded artifacts:"
+          ls -la
+          echo "dist.zip size: $(du -h dist.zip | cut -f1)"
+
+      - name: Generate changelog
+        if: (github.event_name == 'workflow_dispatch' && inputs.generate_changelog) || (github.event_name == 'push' && contains(github.ref, 'refs/tags/'))
+        run: bun x changelogithub
+        env:
+          GITHUB_TOKEN: ${{secrets.GITHUB_TOKEN}}
+
+      - name: Release static export
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.create-release.outputs.release_tag }}
+          files: dist.zip
+          body: |
+            静态导出版本 ${{ needs.create-release.outputs.release_tag }}
+            
+            ### 使用说明
+            1. 下载 `dist.zip` 文件
+            2. 解压后即可获得构建好的静态文件
+            3. 可将 `dist` 目录部署到任何静态文件服务器
+            
+            ### 文件结构
+            ```
+            dist/
+            ├── index.html
+            ├── assets/
+            │   ├── js/
+            │   ├── css/
+            │   └── images/
+            └── ...其他静态文件
+            ```
+
+  purge-cdn:
+    needs: [create-release, release]
+    runs-on: ubuntu-latest
+    if: always()
+    name: Purge CDN Cache
+    steps:
+      - name: Purge jsdelivr cache
+        run: |
+          echo "Purging jsdelivr cache for static resources..."
+          curl -s https://purge.jsdelivr.net/gh/${{ github.repository }}@${{ needs.create-release.outputs.release_tag }}/dist.zip || echo "Purge failed or not needed"
