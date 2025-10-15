@@ -4,9 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       release_tag:
-        description: 'Release tag (e.g., v1.0.0)'
+        description: 'Release tag (e.g., v1.32.1)'
         required: true
-        default: 'v1.0.0'
+        default: 'v1.32.1'
       create_release:
         description: 'Create GitHub Release'
         required: true
@@ -37,6 +37,7 @@ jobs:
     outputs:
       release_tag: ${{ steps.set-tag.outputs.tag }}
       release_exists: ${{ steps.check-release.outputs.exists }}
+      is_tag_release: ${{ steps.set-tag.outputs.is_tag }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -48,8 +49,10 @@ jobs:
         run: |
           if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
             echo "tag=${{ inputs.release_tag }}" >> $GITHUB_OUTPUT
+            echo "is_tag=false" >> $GITHUB_OUTPUT
           else
             echo "tag=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+            echo "is_tag=true" >> $GITHUB_OUTPUT
           fi
           echo "Release tag: ${{ steps.set-tag.outputs.tag }}"
 
@@ -134,8 +137,56 @@ jobs:
           name: static-export
           path: dist.zip
 
-  release:
+  generate-changelog:
     needs: [create-release, build-static]
+    runs-on: ubuntu-latest
+    if: (needs.create-release.outputs.is_tag_release == 'true' || (github.event_name == 'workflow_dispatch' && inputs.generate_changelog)) && (needs.create-release.outputs.release_exists == 'false' || (github.event_name == 'workflow_dispatch' && inputs.overwrite_release))
+    name: Generate Changelog
+    steps:
+      - name: Checkout with full history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v1
+        with:
+          bun-version: "latest"
+
+      - name: Generate changelog with fallback
+        id: changelog
+        run: |
+          # 尝试生成 changelog，如果失败则使用默认内容
+          if bun x changelogithub; then
+            echo "Changelog generated successfully"
+            echo "changelog_success=true" >> $GITHUB_OUTPUT
+          else
+            echo "Changelog generation failed, using default content"
+            echo "changelog_success=false" >> $GITHUB_OUTPUT
+          fi
+        env:
+          GITHUB_TOKEN: ${{secrets.GITHUB_TOKEN}}
+
+      - name: Create manual changelog on failure
+        if: steps.changelog.outputs.changelog_success == 'false'
+        run: |
+          echo "Creating manual changelog..."
+          LAST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+          if [ -z "$LAST_TAG" ]; then
+            # 如果没有之前的 tag，显示最近的提交
+            echo "## Changes since initial commit" > manual_changelog.md
+            git log --oneline -10 >> manual_changelog.md
+          else
+            # 显示与前一个 tag 的差异
+            echo "## Changes since $LAST_TAG" > manual_changelog.md
+            git log --oneline ${LAST_TAG}..HEAD >> manual_changelog.md
+          fi
+          
+          echo "Manual changelog content:"
+          cat manual_changelog.md
+
+  release:
+    needs: [create-release, build-static, generate-changelog]
     runs-on: ubuntu-latest
     if: needs.create-release.outputs.release_exists == 'false' || (github.event_name == 'workflow_dispatch' && inputs.overwrite_release)
     name: Release Static Export
@@ -151,12 +202,6 @@ jobs:
           echo "Downloaded artifacts:"
           ls -la
           echo "dist.zip size: $(du -h dist.zip | cut -f1)"
-
-      - name: Generate changelog
-        if: (github.event_name == 'workflow_dispatch' && inputs.generate_changelog) || (github.event_name == 'push' && contains(github.ref, 'refs/tags/'))
-        run: bun x changelogithub
-        env:
-          GITHUB_TOKEN: ${{secrets.GITHUB_TOKEN}}
 
       - name: Release static export
         uses: softprops/action-gh-release@v2
@@ -181,14 +226,3 @@ jobs:
             │   └── images/
             └── ...其他静态文件
             ```
-
-  purge-cdn:
-    needs: [create-release, release]
-    runs-on: ubuntu-latest
-    if: always()
-    name: Purge CDN Cache
-    steps:
-      - name: Purge jsdelivr cache
-        run: |
-          echo "Purging jsdelivr cache for static resources..."
-          curl -s https://purge.jsdelivr.net/gh/${{ github.repository }}@${{ needs.create-release.outputs.release_tag }}/dist.zip || echo "Purge failed or not needed"
