@@ -1,4 +1,5 @@
 name: 简release
+
 on:
   workflow_dispatch:
     inputs:
@@ -31,6 +32,12 @@ jobs:
       - name: Build static export
         run: bun run build
 
+      - name: Verify build output
+        run: |
+          echo "Build output:"
+          ls -la dist/
+          echo "File count: $(find dist -type f | wc -l)"
+
       - name: Compress dist folder
         run: zip -r dist.zip dist
 
@@ -42,14 +49,31 @@ jobs:
           else
             echo "tag=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
           fi
+          echo "Releasing tag: ${{ steps.set-tag.outputs.tag }}"
+
+      - name: Create simple changelog
+        id: changelog
+        run: |
+          # 创建简单的变更日志
+          CHANGELOG=$(git log --oneline -5 --pretty=format:"- %s" 2>/dev/null || echo "- Initial release")
+          echo "changelog_content<<EOF" >> $GITHUB_OUTPUT
+          echo "## Recent Changes" >> $GITHUB_OUTPUT
+          echo "$CHANGELOG" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
 
       - name: Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.set-tag.outputs.tag }}
           files: dist.zip
-
-      - name: Generate changelog
-        run: bun x changelogithub
-        env:
-          GITHUB_TOKEN: ${{secrets.GITHUB_TOKEN}}
+          body: |
+            静态导出版本 ${{ steps.set-tag.outputs.tag }}
+            
+            ### 包含内容
+            - 构建好的静态文件 (dist.zip)
+            
+            ### 最近更新
+            ${{ steps.changelog.outputs.changelog_content }}
+            
+            ### 使用说明
+            下载 dist.zip 并解压后即可部署到静态服务器。
