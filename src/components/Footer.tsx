@@ -5,7 +5,6 @@ import { useTranslation } from "react-i18next"
 
 const Footer: React.FC = () => {
   const { t } = useTranslation()
-  const isMac = /macintosh|mac os x/i.test(navigator.userAgent)
 
   const { data: settingData } = useQuery({
     queryKey: ["setting"],
@@ -19,28 +18,13 @@ const Footer: React.FC = () => {
       <section className="flex flex-col">
         <section className="mt-1 flex items-center sm:flex-row flex-col justify-between gap-2 text-[13px] font-light tracking-tight text-neutral-600/50 dark:text-neutral-300/50 server-footer-name">
           <div className="flex items-center gap-1">
-            &copy;2020-{new Date().getFullYear()}{" "}
-            /*<a href={/*"https://github.com/naiba/nezha"*/} target="_blank">
-              Nezha*/
-            </a>*/
-            <p>{/*settingData?.data?.version || ""}</p>
+            &copy;2020-{new Date().getFullYear()}
           </div>
           <div className="server-footer-theme flex flex-col items-center sm:items-end">
-            /*<p className="mt-1 text-[13px] font-light tracking-tight text-neutral-600/50 dark:text-neutral-300/50">
-              <kbd className="pointer-events-none mx-1 inline-flex h-4 select-none items-center gap-1 rounded border bg-muted px-1.5 font-mono text-[10px] font-medium text-muted-foreground opacity-100">
-                {isMac ? <span className="text-xs">⌘</span> : "Ctrl "}K
-              </kbd>*/
-            </p>
+            {/* 移除了快捷键提示部分 */}
             <section>
-              /*{t("footer.themeBy")}
-              <a href={"https://github.com/hamster1963/nezha-dash"} target="_blank">
-                nezha-dash
-              </a>
-              {import.meta.env.VITE_GIT_HASH && (
-                <a href={"https://github.com/hamster1963/nezha-dash-v1/commit/" + import.meta.env.VITE_GIT_HASH} className="ml-1">
-                  ({import.meta.env.VITE_GIT_HASH})
-                </a>
-              )}
+              {t("footer.themeBy")}
+              {/* 移除了 nezha-dash 链接和 Git 哈希部分 */}
             </section>
           </div>
         </section>
