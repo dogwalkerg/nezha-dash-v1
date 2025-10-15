@@ -57,7 +57,7 @@ function Header() {
   }, [customLogo])
 
   useEffect(() => {
-    document.title = siteName || "哪吒监控 Nezha Monitoring"
+    document.title = siteName || "主机系统管理-Panel"
   }, [siteName])
 
   const handleBackgroundToggle = () => {
@@ -256,12 +256,12 @@ function DashboardLink() {
   return (
     <div className="flex items-center gap-2">
       <a
-        href={"/dashboard"}
+        href={"/dasherror"}
         rel="noopener noreferrer"
         className="flex items-center text-nowrap gap-1 text-sm font-medium opacity-50 transition-opacity hover:opacity-100"
       >
         {!isLogin && t("login")}
-        {isLogin && t("dashboard")}
+        {isLogin && t("dasherror")}
       </a>
     </div>
   )
