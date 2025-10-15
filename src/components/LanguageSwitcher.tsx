@@ -38,9 +38,9 @@ export function LanguageSwitcher() {
             "bg-white/70 dark:bg-black/70": customBackgroundImage,
           })}
         >
-          <LanguageIcon className="size-4" />
-          <span className="sr-only">Change language</span>
-        </Button>
+       <LanguageIcon className="size-4" />
+        <span className="ml-1 text-xs uppercase">{locale.split('-')[0]}</span> {/* 显示如 "en", "zh" */}
+         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent className="flex flex-col gap-0.5" align="end">
         {localeItems.map((item) => (
