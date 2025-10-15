@@ -1,8 +1,8 @@
 {
-  "nezha": "哪吒监控",
-  "overview": "概览",
+  "nezha": "主机管理",
+  "overview": "系统列表",
   "dasherror": "管理后台",
-  "login": "登录",
+  "login": "",
   "online": "在线",
   "offline": "离线",
   "whereTheTimeIs": "当前时间",
@@ -83,13 +83,11 @@
     "zh-CN": "简体中文"
   },
   "theme": {
-    "light": "亮色",
-    "dark": "暗色",
-    "system": "跟随系统"
+    "light": "亮色"
   },
   "error": {
-    "pageNotFound": "页面不存在",
-    "backToHome": "回到主页"
+    "pageNotFound": "访问页面不存在",
+    "backToHome": "赶紧回到主页"
   },
   "tabSwitch": {
     "Detail": "详情",
@@ -121,8 +119,5 @@
   "NoResults": "结果为空",
   "Servers": "服务器",
   "Shortcuts": "快捷键",
-  "ToggleLightMode": "切换亮色模式",
-  "ToggleDarkMode": "切换暗色模式",
-  "ToggleSystemMode": "切换系统模式",
   "Home": "首页"
 }
