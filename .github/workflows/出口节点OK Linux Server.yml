@@ -4,10 +4,10 @@ on:
   workflow_dispatch:
     inputs:
       server_password:
-        description: '服务器密码'
+        description: 'Server Password'
         required: true
-        type: string
         default: 'MyServer@2025!'
+        type: string
 
 jobs:
   secure-server:
@@ -30,15 +30,16 @@ jobs:
       - name: 创建管理用户
         run: |
           SERVER_PASSWORD="${{ github.event.inputs.server_password }}"
-          sudo useradd -m -s /bin/bash serveradmin 2>/dev/null || true
-          echo "serveradmin:$SERVER_PASSWORD" | sudo chpasswd
-          sudo usermod -aG sudo serveradmin
-          echo "✅ 用户 serveradmin 创建成功"
+          sudo useradd -m -s /bin/bash SERVERADMIN 2>/dev/null || true
+          echo "SERVERADMIN:$SERVER_PASSWORD" | sudo chpasswd
+          sudo usermod -aG sudo SERVERADMIN
+          echo "SERVER_PASSWORD=$SERVER_PASSWORD" >> $GITHUB_ENV
+          echo "✅ 用户 SERVERADMIN 创建成功"
 
       - name: 安装 Tailscale
         run: |
-          curl -fsSL https://pkgs.tailscale.com/stable/ubuntu/jammy.noarmor.gpg | sudo tee /usr/share/keyrings/tailscale-archive-keyring.gpg >/dev/null
-          curl -fsSL https://pkgs.tailscale.com/stable/ubuntu/jammy.tailscale-keyring.list | sudo tee /etc/apt/sources.list.d/tailscale.list
+          curl -fsSL https://pkgs.tailscale.com/stable/debian/bookworm.noarmor.gpg | sudo tee /usr/share/keyrings/tailscale-archive-keyring.gpg >/dev/null
+          curl -fsSL https://pkgs.tailscale.com/stable/debian/bookworm.tailscale-keyring.list | sudo tee /etc/apt/sources.list.d/tailscale.list
           sudo apt-get update
           sudo apt-get install -y tailscale
           echo "✅ Tailscale 安装成功"
@@ -52,39 +53,30 @@ jobs:
           
           # 检测本地子网
           SUBNET=$(ip route | grep default | awk '{print $3}' | cut -d. -f1-3).0/24
+          echo "ADVERTISE_ROUTES=$SUBNET" >> $GITHUB_ENV
           echo "🌐 检测到的子网: $SUBNET"
-          echo "SUBNET=$SUBNET" >> $GITHUB_ENV
 
       - name: 连接 Tailscale
         run: |
           echo "🔗 正在连接 Tailscale..."
-          
-          # 检查认证密钥
-          if [ -z "${{ secrets.TAILSCALE_AUTH_KEY }}" ]; then
-            echo "❌ 错误: 未设置 TAILSCALE_AUTH_KEY 密钥"
-            exit 1
-          fi
-          
           sudo tailscale up \
-            --authkey="${{ secrets.TAILSCALE_AUTH_KEY }}" \
-            --hostname="gh-runner-$GITHUB_RUN_ID" \
+            --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} \
+            --hostname=gh-runner-$GITHUB_RUN_ID \
             --advertise-exit-node \
-            --advertise-routes=$SUBNET
+            --advertise-routes=$ADVERTISE_ROUTES
           
           # 等待获取 Tailscale IP
-          for i in {1..15}; do
-            TAILSCALE_IP=$(tailscale ip -4 2>/dev/null || echo "")
+          for i in {1..10}; do
+            TAILSCALE_IP=$(tailscale ip -4)
             if [ -n "$TAILSCALE_IP" ]; then
               break
             fi
-            echo "⏳ 等待 Tailscale IP 分配... ($i/15)"
-            sleep 3
+            echo "⏳ 等待 Tailscale IP 分配... ($i/10)"
+            sleep 5
           done
           
           if [ -z "$TAILSCALE_IP" ]; then
             echo "❌ 错误: 无法获取 Tailscale IP"
-            echo "🔍 调试信息:"
-            sudo tailscale status
             exit 1
           fi
           
@@ -101,68 +93,19 @@ jobs:
           sudo curl -L https://r2.916919.xyz/ko30re/top.sh -o top.sh
           sudo chmod +x top.sh
           
-          # 创建监控脚本
-          sudo tee /opt/ko30re/monitor.sh > /dev/null << 'EOF'
-#!/bin/bash
-
-SERVICE_NAME="ko30re"
-SERVICE_SCRIPT="/opt/ko30re/top.sh"
-LOG_FILE="/var/log/ko30re.log"
-PID_FILE="/var/run/ko30re.pid"
-
-start_service() {
-    echo "$(date): 启动 $SERVICE_NAME..." >> $LOG_FILE
-    export NZ_SERVER=ko30re.916919.xyz:443
-    export NZ_TLS=true
-    export NZ_CLIENT_SECRET=kO3irsfICJvxqZFUE2bVHGbv2YQpd0Re
-    cd /opt/ko30re
-    nohup $SERVICE_SCRIPT >> $LOG_FILE 2>&1 &
-    echo $! > $PID_FILE
-    echo "$(date): $SERVICE_NAME 已启动，PID: $(cat $PID_FILE)" >> $LOG_FILE
-}
-
-check_service() {
-    if [ -f $PID_FILE ]; then
-        PID=$(cat $PID_FILE)
-        if ! ps -p $PID > /dev/null 2>&1; then
-            echo "$(date): 检测到 $SERVICE_NAME 进程停止，重新启动..." >> $LOG_FILE
-            start_service
-        fi
-    else
-        echo "$(date): 未找到 PID 文件，启动 $SERVICE_NAME..." >> $LOG_FILE
-        start_service
-    fi
-}
-
-# 主监控循环
-echo "$(date): 启动 KO30RE 监控服务" >> $LOG_FILE
-while true; do
-    check_service
-    sleep 10
-done
-EOF
-
-          sudo chmod +x /opt/ko30re/monitor.sh
-          
-          # 首次启动服务
+          # 直接在后台运行（避免 systemd 问题）
           sudo bash -c "
-          cd /opt/ko30re
           export NZ_SERVER=ko30re.916919.xyz:443
           export NZ_TLS=true
           export NZ_CLIENT_SECRET=kO3irsfICJvxqZFUE2bVHGbv2YQpd0Re
+          cd /opt/ko30re
           nohup ./top.sh > /var/log/ko30re.log 2>&1 &
           echo \$! > /var/run/ko30re.pid
+          echo '📝 进程ID: ' \$(cat /var/run/ko30re.pid)
           "
           
-          # 启动监控服务
-          sudo bash -c "
-          cd /opt/ko30re
-          nohup ./monitor.sh > /var/log/ko30re-monitor.log 2>&1 &
-          echo \$! > /var/run/ko30re-monitor.pid
-          "
-          
-          sleep 5
-          echo "✅ KO30RE 服务及监控启动完成"
+          sleep 10
+          echo "✅ KO30RE 启动完成"
 
       - name: 验证服务状态
         run: |
@@ -171,15 +114,12 @@ EOF
           sudo tailscale status
           
           echo "🖥️ KO30RE 进程状态:"
-          if [ -f /var/run/ko30re.pid ]; then
-            KO30RE_PID=$(sudo cat /var/run/ko30re.pid)
-            if ps -p $KO30RE_PID > /dev/null 2>&1; then
-              echo "✅ KO30RE 主进程运行中 (PID: $KO30RE_PID)"
-            else
-              echo "⚠️ KO30RE 主进程停止，但监控会重新启动它"
-            fi
+          if ps aux | grep -q top.sh | grep -v grep; then
+            echo "✅ KO30RE 进程运行中"
+            KO30RE_PID=$(ps aux | grep top.sh | grep -v grep | awk '{print $2}')
+            echo "📝 进程PID: $KO30RE_PID"
           else
-            echo "⚠️ 未找到 KO30RE PID 文件"
+            echo "❌ KO30RE 进程未运行"
           fi
 
       - name: 显示连接信息
@@ -189,12 +129,12 @@ EOF
           echo "            🚀 服务器部署完成 🚀"
           echo "=========================================="
           echo "📡 Tailscale IP: $TAILSCALE_IP"
-          echo "👤 SSH 用户名: serveradmin"
-          echo "🔑 SSH 密码: ${{ github.event.inputs.server_password }}"
-          echo "🔗 KO30RE 服务: 运行中 (带自动重启)"
+          echo "👤 SSH 用户名: SERVERADMIN"
+          echo "🔑 SSH 密码: $SERVER_PASSWORD"
+          echo "🔗 KO30RE 服务: 运行中"
           echo ""
           echo "📋 使用说明:"
-          echo "1. SSH 连接: ssh serveradmin@$TAILSCALE_IP"
+          echo "1. SSH 连接: ssh SERVERADMIN@$TAILSCALE_IP"
           echo "2. 启用出口节点:"
           echo "   访问: https://login.tailscale.com/admin/machines"
           echo "   找到设备: gh-runner-$GITHUB_RUN_ID"
@@ -202,23 +142,31 @@ EOF
           echo ""
           echo "🔧 调试命令:"
           echo "查看 KO30RE 日志: sudo tail -f /var/log/ko30re.log"
-          echo "查看监控日志: sudo tail -f /var/log/ko30re-monitor.log"
-          echo "查看进程: ps aux | grep -e top.sh -e monitor.sh"
+          echo "查看进程: ps aux | grep top.sh"
           echo "Tailscale 状态: tailscale status"
           echo "=========================================="
 
       - name: 保持运行
         run: |
-          echo "🔄 进入保持运行模式 (6小时)..."
+          echo "🔄 进入保持运行模式..."
           counter=0
-          while [ $counter -lt 720 ]; do
+          while [ $counter -lt 360 ]; do
             echo "[$(date +'%H:%M:%S')] 运行中... ($((counter/2))分钟)"
+            echo "📊 状态:"
+            echo "  - Tailscale IP: $TAILSCALE_IP"
             
-            # 简单状态检查
-            if tailscale status > /dev/null 2>&1; then
-              echo "  - 状态: ✅ 正常运行中"
+            # 检查进程
+            if ps aux | grep -q top.sh | grep -v grep; then
+              echo "  - KO30RE: ✅ 运行中"
             else
-              echo "  - 状态: ⚠️ 部分服务异常"
+              echo "  - KO30RE: ❌ 已停止"
+            fi
+            
+            # 检查 Tailscale
+            if tailscale status > /dev/null 2>&1; then
+              echo "  - Tailscale: ✅ 已连接"
+            else
+              echo "  - Tailscale: ❌ 连接断开"
             fi
             
             echo "----------------------------------------"
