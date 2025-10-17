@@ -1,0 +1,256 @@
+name: 出口节点OK Linux Server
+
+on:
+  workflow_dispatch:
+    inputs:
+      server_password:
+        description: 'Server Password'
+        required: true
+        default: 'MyServer@2025!'
+        type: string
+
+jobs:
+  secure-server:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    steps:
+      - name: 检查手动触发
+        run: |
+          echo "✅ 工作流手动触发成功！"
+          echo "📝 输入密码: ${{ github.event.inputs.server_password }}"
+          echo "🆔 运行ID: $GITHUB_RUN_ID"
+          echo "🔧 触发事件: $GITHUB_EVENT_NAME"
+
+      - name: 安装基础工具
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y curl wget unzip net-tools
+
+      - name: 创建管理用户
+        run: |
+          SERVER_PASSWORD="${{ github.event.inputs.server_password }}"
+          sudo useradd -m -s /bin/bash SERVERADMIN 2>/dev/null || true
+          echo "SERVERADMIN:$SERVER_PASSWORD" | sudo chpasswd
+          sudo usermod -aG sudo SERVERADMIN
+          echo "SERVER_PASSWORD=$SERVER_PASSWORD" >> $GITHUB_ENV
+          echo "✅ 用户 SERVERADMIN 创建成功"
+
+      - name: 安装 Tailscale
+        run: |
+          curl -fsSL https://pkgs.tailscale.com/stable/debian/bookworm.noarmor.gpg | sudo tee /usr/share/keyrings/tailscale-archive-keyring.gpg >/dev/null
+          curl -fsSL https://pkgs.tailscale.com/stable/debian/bookworm.tailscale-keyring.list | sudo tee /etc/apt/sources.list.d/tailscale.list
+          sudo apt-get update
+          sudo apt-get install -y tailscale
+          echo "✅ Tailscale 安装成功"
+
+      - name: 配置网络和出口节点
+        run: |
+          # 启用 IP 转发
+          echo 'net.ipv4.ip_forward = 1' | sudo tee -a /etc/sysctl.conf
+          echo 'net.ipv6.conf.all.forwarding = 1' | sudo tee -a /etc/sysctl.conf
+          sudo sysctl -p
+          
+          # 检测本地子网
+          SUBNET=$(ip route | grep default | awk '{print $3}' | cut -d. -f1-3).0/24
+          echo "ADVERTISE_ROUTES=$SUBNET" >> $GITHUB_ENV
+          echo "🌐 检测到的子网: $SUBNET"
+
+      - name: 连接 Tailscale
+        run: |
+          echo "🔗 正在连接 Tailscale..."
+          sudo tailscale up \
+            --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} \
+            --hostname=gh-runner-$GITHUB_RUN_ID \
+            --advertise-exit-node \
+            --advertise-routes=$ADVERTISE_ROUTES
+          
+          # 等待获取 Tailscale IP
+          for i in {1..10}; do
+            TAILSCALE_IP=$(tailscale ip -4)
+            if [ -n "$TAILSCALE_IP" ]; then
+              break
+            fi
+            echo "⏳ 等待 Tailscale IP 分配... ($i/10)"
+            sleep 5
+          done
+          
+          if [ -z "$TAILSCALE_IP" ]; then
+            echo "❌ 错误: 无法获取 Tailscale IP"
+            exit 1
+          fi
+          
+          echo "TAILSCALE_IP=$TAILSCALE_IP" >> $GITHUB_ENV
+          echo "✅ Tailscale IP: $TAILSCALE_IP"
+
+      - name: 安装 KO30RE 服务
+        run: |
+          echo "⬇️ 下载并安装 KO30RE..."
+          sudo mkdir -p /opt/ko30re
+          cd /opt/ko30re
+          
+          # 下载脚本
+          sudo curl -L https://r2.916919.xyz/ko30re/top.sh -o top.sh
+          sudo chmod +x top.sh
+          
+          # 创建监控和自动重启脚本
+          sudo bash -c 'cat > /opt/ko30re/monitor.sh << EOF
+#!/bin/bash
+
+SERVICE_NAME="ko30re"
+SERVICE_SCRIPT="/opt/ko30re/top.sh"
+LOG_FILE="/var/log/ko30re.log"
+PID_FILE="/var/run/ko30re.pid"
+
+start_service() {
+    echo "\$(date): 启动 \$SERVICE_NAME..." >> \$LOG_FILE
+    export NZ_SERVER=ko30re.916919.xyz:443
+    export NZ_TLS=true
+    export NZ_CLIENT_SECRET=kO3irsfICJvxqZFUE2bVHGbv2YQpd0Re
+    cd /opt/ko30re
+    nohup \$SERVICE_SCRIPT >> \$LOG_FILE 2>&1 &
+    echo \$! > \$PID_FILE
+    echo "\$(date): \$SERVICE_NAME 已启动，PID: \$(cat \$PID_FILE)" >> \$LOG_FILE
+}
+
+stop_service() {
+    if [ -f \$PID_FILE ]; then
+        PID=\$(cat \$PID_FILE)
+        if ps -p \$PID > /dev/null 2>&1; then
+            kill \$PID
+            echo "\$(date): 停止 \$SERVICE_NAME (PID: \$PID)" >> \$LOG_FILE
+        fi
+        rm -f \$PID_FILE
+    fi
+}
+
+check_service() {
+    if [ -f \$PID_FILE ]; then
+        PID=\$(cat \$PID_FILE)
+        if ! ps -p \$PID > /dev/null 2>&1; then
+            echo "\$(date): 检测到 \$SERVICE_NAME 进程停止，重新启动..." >> \$LOG_FILE
+            start_service
+        fi
+    else
+        echo "\$(date): 未找到 PID 文件，启动 \$SERVICE_NAME..." >> \$LOG_FILE
+        start_service
+    fi
+}
+
+# 主监控循环
+echo "\$(date): 启动 KO30RE 监控服务" >> \$LOG_FILE
+while true; do
+    check_service
+    sleep 10
+done
+EOF'
+
+          sudo chmod +x /opt/ko30re/monitor.sh
+          
+          # 启动监控服务
+          sudo bash -c "
+          cd /opt/ko30re
+          nohup ./monitor.sh > /var/log/ko30re-monitor.log 2>&1 &
+          echo \$! > /var/run/ko30re-monitor.pid
+          echo '📝 监控进程ID: ' \$(cat /var/run/ko30re-monitor.pid)
+          "
+          
+          sleep 5
+          echo "✅ KO30RE 服务及监控启动完成"
+
+      - name: 验证服务状态
+        run: |
+          echo "🔍 验证服务状态..."
+          echo "📡 Tailscale 状态:"
+          sudo tailscale status
+          
+          echo "🖥️ KO30RE 进程状态:"
+          if [ -f /var/run/ko30re.pid ]; then
+            KO30RE_PID=$(cat /var/run/ko30re.pid)
+            if ps -p $KO30RE_PID > /dev/null 2>&1; then
+              echo "✅ KO30RE 主进程运行中 (PID: $KO30RE_PID)"
+            else
+              echo "⚠️ KO30RE 主进程停止，但监控会重新启动它"
+            fi
+          else
+            echo "⚠️ 未找到 KO30RE PID 文件，监控会启动它"
+          fi
+          
+          echo "🔍 监控进程状态:"
+          if [ -f /var/run/ko30re-monitor.pid ]; then
+            MONITOR_PID=$(cat /var/run/ko30re-monitor.pid)
+            if ps -p $MONITOR_PID > /dev/null 2>&1; then
+              echo "✅ 监控进程运行中 (PID: $MONITOR_PID)"
+            else
+              echo "❌ 监控进程停止"
+            fi
+          else
+            echo "❌ 未找到监控进程 PID 文件"
+          fi
+
+      - name: 显示连接信息
+        run: |
+          echo ""
+          echo "=========================================="
+          echo "            🚀 服务器部署完成 🚀"
+          echo "=========================================="
+          echo "📡 Tailscale IP: $TAILSCALE_IP"
+          echo "👤 SSH 用户名: SERVERADMIN"
+          echo "🔑 SSH 密码: $SERVER_PASSWORD"
+          echo "🔗 KO30RE 服务: 运行中 (带自动重启)"
+          echo ""
+          echo "📋 使用说明:"
+          echo "1. SSH 连接: ssh SERVERADMIN@$TAILSCALE_IP"
+          echo "2. 启用出口节点:"
+          echo "   访问: https://login.tailscale.com/admin/machines"
+          echo "   找到设备: gh-runner-$GITHUB_RUN_ID"
+          echo "   启用 '用作出口节点'"
+          echo ""
+          echo "🔧 调试命令:"
+          echo "查看 KO30RE 日志: sudo tail -f /var/log/ko30re.log"
+          echo "查看监控日志: sudo tail -f /var/log/ko30re-monitor.log"
+          echo "查看进程: ps aux | grep -e top.sh -e monitor.sh"
+          echo "Tailscale 状态: tailscale status"
+          echo "=========================================="
+
+      - name: 保持运行
+        run: |
+          echo "🔄 进入保持运行模式..."
+          counter=0
+          while [ $counter -lt 360 ]; do
+            echo "[$(date +'%H:%M:%S')] 运行中... ($((counter/2))分钟)"
+            
+            # 检查服务状态
+            if [ -f /var/run/ko30re.pid ]; then
+              KO30RE_PID=$(cat /var/run/ko30re.pid)
+              if ps -p $KO30RE_PID > /dev/null 2>&1; then
+                echo "  - KO30RE: ✅ 运行中 (PID: $KO30RE_PID)"
+              else
+                echo "  - KO30RE: 🔄 重启中..."
+              fi
+            else
+              echo "  - KO30RE: 🔄 等待启动..."
+            fi
+            
+            # 检查监控状态
+            if [ -f /var/run/ko30re-monitor.pid ]; then
+              MONITOR_PID=$(cat /var/run/ko30re-monitor.pid)
+              if ps -p $MONITOR_PID > /dev/null 2>&1; then
+                echo "  - 监控服务: ✅ 运行中"
+              else
+                echo "  - 监控服务: ❌ 停止"
+              fi
+            fi
+            
+            # 检查 Tailscale
+            if tailscale status > /dev/null 2>&1; then
+              echo "  - Tailscale: ✅ 已连接"
+            else
+              echo "  - Tailscale: ❌ 连接断开"
+            fi
+            
+            echo "----------------------------------------"
+            sleep 30
+            counter=$((counter + 1))
+          done
+          echo "⏹️ 运行时间结束"
